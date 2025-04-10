@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+jinja2
+transformers
+torch
+sentencepiece
+aiofiles
+python-multipart

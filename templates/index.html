@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Translation Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-200 min-h-screen p-8">
+  <div class="max-w-6xl mx-auto">
+    <h1 class="text-3xl font-bold mb-6">📝 Translation Cache Viewer</h1>
+
+    <div class="flex justify-between items-center mb-4">
+      <form method="get" action="/" class="w-full max-w-lg flex gap-2">
+        <input type="text" name="q" placeholder="🔍 Buscar..." value="{{ query }}" class="flex-1 p-2 rounded bg-gray-800 border border-gray-700 text-white">
+        <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded">Buscar</button>
+      </form>
+      <a href="/export" class="ml-4 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded">⬇️ Exportar .txt</a>
+    </div>
+
+    <div class="overflow-x-auto bg-gray-800 rounded-lg">
+      <table class="min-w-full table-auto">
+        <thead class="bg-gray-700 text-left">
+          <tr>
+            <th class="p-3">Texto original</th>
+            <th class="p-3">Traducción</th>
+            <th class="p-3">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for source, target in translations.items() %}
+          <tr class="border-b border-gray-700 hover:bg-gray-700">
+            <form method="post" action="/edit">
+              <td class="p-3">{{ source }}<input type="hidden" name="source" value="{{ source }}"></td>
+              <td class="p-3"><input type="text" name="target" value="{{ target }}" class="w-full p-2 rounded bg-gray-900 border border-gray-600 text-white"></td>
+              <td class="p-3 flex gap-2">
+                <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded">💾 Guardar</button>
+            </form>
+            <form method="post" action="/delete" class="inline">
+              <input type="hidden" name="source" value="{{ source }}">
+              <button type="submit" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded">❌ Borrar</button>
+            </form>
+              </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="flex justify-between items-center mt-6">
+      {% if page > 1 %}
+        <a href="/?q={{ query }}&page={{ page - 1 }}" class="text-blue-400 hover:underline">⬅️ Página anterior</a>
+      {% else %}
+        <span></span>
+      {% endif %}
+
+      <span class="text-gray-400">Página {{ page }} de {{ total_pages }}</span>
+
+      {% if page < total_pages %}
+        <a href="/?q={{ query }}&page={{ page + 1 }}" class="text-blue-400 hover:underline">Siguiente página ➡️</a>
+      {% else %}
+        <span></span>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>
