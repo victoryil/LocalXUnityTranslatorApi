@@ -2,8 +2,7 @@ from fastapi import FastAPI, Query, Request, Form
 from starlette.responses import RedirectResponse, FileResponse
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from transformers import MBartForConditionalGeneration, MBartTokenizer
-import torch
+from transformers import MarianMTModel, MarianTokenizer
 import os
 import logging
 
@@ -21,45 +20,47 @@ logging.basicConfig(
     ]
 )
 
-model_name = "facebook/mbart-large-50-many-to-many-mmt"
-tokenizer = MBartTokenizer.from_pretrained(model_name)
-model = MBartForConditionalGeneration.from_pretrained(model_name)
-
-LANG_MAP = {
-    "en": "en_XX",
-    "es": "es_XX",
-    "fr": "fr_XX",
-    "de": "de_DE",
-    "it": "it_IT",
-    "pt": "pt_XX",
-    "ru": "ru_RU",
-    "ja": "ja_XX"
-}
-
-CACHE_FILE = "translations_cache.txt"
 translation_cache = {}
 
 # ------------------ Cache ------------------
-def load_cache():
-    if not os.path.exists(CACHE_FILE):
-        logging.info("No se encontró archivo de caché, se creará uno nuevo.")
+
+def get_cache_file(from_lang, to_lang):
+    return f"translations_{from_lang}_{to_lang}.txt"
+
+def load_cache(from_lang, to_lang):
+    filename = get_cache_file(from_lang, to_lang)
+    translation_cache.clear()
+    if not os.path.exists(filename):
+        logging.info(f"No se encontró archivo de caché para {from_lang}-{to_lang}, se creará uno nuevo.")
         return
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+    with open(filename, "r", encoding="utf-8") as f:
         for line in f:
             if '=' in line:
                 src, tgt = line.strip().split("=", 1)
                 translation_cache[src.strip()] = tgt.strip()
-    logging.info(f"Caché cargada con {len(translation_cache)} entradas.")
+    logging.info(f"Caché {filename} cargada con {len(translation_cache)} entradas.")
 
-def save_cache():
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+def save_cache(from_lang, to_lang):
+    filename = get_cache_file(from_lang, to_lang)
+    with open(filename, "w", encoding="utf-8") as f:
         for k, v in translation_cache.items():
             f.write(f"{k}={v}\n")
-    logging.info("Caché guardada correctamente.")
+    logging.info(f"Caché {filename} guardada correctamente.")
 
-load_cache()
+# ------------------ Modelo ------------------
 
-# ------------------ API ------------------
+def load_model(from_lang: str, to_lang: str):
+    model_name = f"Helsinki-NLP/opus-mt-{from_lang}-{to_lang}"
+    try:
+        tokenizer = MarianTokenizer.from_pretrained(model_name)
+        model = MarianMTModel.from_pretrained(model_name)
+        return tokenizer, model
+    except Exception as e:
+        logging.error(f"Error al cargar el modelo {model_name}: {e}")
+        return None, None
+
+# ------------------ API de Traducción ------------------
+
 @app.get("/translate")
 async def translate(text: str = Query(...), from_: str = Query("en", alias="from"), to: str = Query("es")):
     text = text.strip()
@@ -68,28 +69,27 @@ async def translate(text: str = Query(...), from_: str = Query("en", alias="from
         logging.warning("⚠️ Texto vacío recibido.")
         return text
 
+    load_cache(from_, to)
+
     if text in translation_cache:
         logging.info("✅ Traducción encontrada en caché.")
         return translation_cache[text]
 
-    src_lang = LANG_MAP.get(from_.lower(), "en_XX")
-    tgt_lang = LANG_MAP.get(to.lower(), "es_XX")
+    tokenizer, model = load_model(from_, to)
+    if not tokenizer or not model:
+        return text
 
     try:
-        tokenizer.src_lang = src_lang
-        encoded = tokenizer(text, return_tensors="pt")
-        with torch.no_grad():
-            generated = model.generate(
-                **encoded, forced_bos_token_id=tokenizer.lang_code_to_id[tgt_lang]
-            )
-        translated = tokenizer.batch_decode(generated, skip_special_tokens=True)[0].strip()
+        encoded = tokenizer([text], return_tensors="pt", padding=True)
+        translated_tokens = model.generate(**encoded)
+        translated = tokenizer.decode(translated_tokens[0], skip_special_tokens=True).strip()
 
-        if not translated or len(translated) > 200 or "el comité recomienda" in translated:
+        if not translated or len(translated) > 200:
             logging.warning("🔄 Traducción sospechosa, devolviendo texto original.")
             return text
 
         translation_cache[text] = translated
-        save_cache()
+        save_cache(from_, to)
         logging.info(f"💬 Traducción generada: '{translated}'")
         return translated
     except Exception as e:
@@ -97,8 +97,10 @@ async def translate(text: str = Query(...), from_: str = Query("en", alias="from
         return text
 
 # ------------------ Interfaz Web ------------------
+
 @app.get("/", response_class=HTMLResponse)
-def read_translations(request: Request, q: str = "", page: int = 1):
+def read_translations(request: Request, q: str = "", page: int = 1, from_: str = "en", to: str = "es"):
+    load_cache(from_, to)
     PER_PAGE = 25
     filtered = {k: v for k, v in translation_cache.items() if q.lower() in k.lower() or q.lower() in v.lower()}
     total = len(filtered)
@@ -113,41 +115,46 @@ def read_translations(request: Request, q: str = "", page: int = 1):
         "translations": current_page_items,
         "query": q,
         "page": page,
-        "total_pages": total_pages
+        "total_pages": total_pages,
+        "from_": from_,
+        "to": to
     })
 
 @app.post("/edit")
-def edit_translation(source: str = Form(...), target: str = Form(...)):
+def edit_translation(source: str = Form(...), target: str = Form(...), from_: str = Form(...), to: str = Form(...)):
+    load_cache(from_, to)
     translation_cache[source] = target
-    save_cache()
+    save_cache(from_, to)
     logging.info(f"✏️ Traducción editada: '{source}' → '{target}'")
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url=f"/?from_={from_}&to={to}", status_code=303)
 
 @app.post("/delete")
-def delete_translation(source: str = Form(...)):
+def delete_translation(source: str = Form(...), from_: str = Form(...), to: str = Form(...)):
+    load_cache(from_, to)
     if source in translation_cache:
         del translation_cache[source]
-        save_cache()
+        save_cache(from_, to)
         logging.info(f"🗑️ Traducción eliminada: '{source}'")
-    return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url=f"/?from_={from_}&to={to}", status_code=303)
 
 @app.get("/export")
-def export_cache():
-    logging.info("📤 Exportación del archivo de traducciones solicitada.")
-    return FileResponse(CACHE_FILE, media_type="text/plain", filename="translations_cache.txt")
+def export_cache(from_: str = Query("en"), to: str = Query("es")):
+    filename = get_cache_file(from_, to)
+    logging.info(f"📤 Exportando caché {filename}")
+    return FileResponse(filename, media_type="text/plain", filename=filename)
+
+@app.get("/download-logs")
+def download_logs():
+    return FileResponse(LOG_FILE, media_type="text/plain", filename="server.log")
 
 @app.get("/logs", response_class=HTMLResponse)
 def show_logs(request: Request, raw: bool = False):
     try:
-        with open("server.log", "r", encoding="utf-8") as f:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
             lines = f.readlines()[-200:]
         log_text = "".join(lines)
     except Exception as e:
         log_text = f"Error al leer el archivo de log: {e}"
-
     if raw:
         return log_text
     return templates.TemplateResponse("logs.html", {"request": request, "logs": log_text})
-@app.get("/download-logs")
-def download_logs():
-    return FileResponse("server.log", media_type="text/plain", filename="server.log")
